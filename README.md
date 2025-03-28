@@ -42,7 +42,7 @@ list
 add a task
 
 ```bash
-add "task=Buy groceries"
+add "Buy groceries"
 ```
 
 remove a task

@@ -10,7 +10,7 @@ load_todos() ->
         {ok, Bin} ->
             binary_to_term(Bin);
         {error, _} ->
-            {0, []}  % default if file doesn't exist
+            {0, []}
     end.
 
 format_todos([]) ->
@@ -52,10 +52,9 @@ extract_param(RequestStr, Param) ->
 extract_task(RequestStr) ->
     case re:run(RequestStr, "task=([^&\r\n]+)", [{capture, [1], list}]) of
         {match, [Task]} -> 
-						% URL decode the task
             url_decode(Task);
         _ -> 
-            "New task"  % Default if no task parameter found
+            "New task"
     end.
 
 extract_id(RequestStr) ->
@@ -78,6 +77,17 @@ url_decode([$+ | Rest], Acc) ->
 url_decode([C | Rest], Acc) ->
     url_decode(Rest, [C | Acc]).
 
+extract_path(RequestStr) ->
+    case re:run(RequestStr, "^(GET|POST)\\s+(/[^\\s?]+)", [{capture, [2], list}]) of
+        {match, [Path]} -> Path;
+        _ -> "/"
+    end.
+
+extract_method(RequestStr) ->
+    case re:run(RequestStr, "^(GET|POST)\\s+", [{capture, [1], list}]) of
+        {match, [Method]} -> Method;
+        _ -> "UNKNOWN"
+    end.
 start_rest_server() ->
     {ok, ListenSocket} = gen_tcp:listen(8080, [
 					       binary,
@@ -93,14 +103,16 @@ accept_connections(ListenSocket) ->
     case gen_tcp:recv(Socket, 0) of
         {ok, Request} ->
 	    RequestStr = binary_to_list(Request),
+	    Method = extract_method(RequestStr),
+            Path = extract_path(RequestStr),
 	    Response = 
-		case RequestStr of
-		    "GET /list" ++ _ ->
+		case {Method, Path} of
+		    {"GET", "/list"} ->
 			{_, Todos} = load_todos(),
 			TodosJson = format_todos(Todos),
 			ContentLength = integer_to_list(length(TodosJson)),
 			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ TodosJson;
-		    "POST /add" ++ _ ->
+		    {"POST", "/add"} ->
 			{Count, Todos} = load_todos(),
 			Task = extract_task(RequestStr),
 			NewId = Count + 1,
@@ -110,7 +122,7 @@ accept_connections(ListenSocket) ->
                         FlatJson = lists:flatten(TaskJson),
                         ContentLength = integer_to_list(length(FlatJson)),
 			"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
-		    "POST /remove" ++ _ ->
+		    {"POST", "/remove"} ->
                         {Count, Todos} = load_todos(),
                         Id = extract_id(RequestStr),
                         NewTodos = lists:filter(fun({I, _, _}) -> I =/= Id end, Todos),
@@ -119,7 +131,7 @@ accept_connections(ListenSocket) ->
                         FlatJson = lists:flatten(ResultJson),
                         ContentLength = integer_to_list(length(FlatJson)),
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
-		    "POST /complete" ++ _ ->
+		    {"POST", "/complete"} ->
 			{Count, Todos} = load_todos(),
                         Id = extract_id(RequestStr),
 			UpdatedTodos = lists:map(
@@ -133,7 +145,7 @@ accept_connections(ListenSocket) ->
                         FlatJson = lists:flatten(ResultJson),
                         ContentLength = integer_to_list(length(FlatJson)),
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
-                   "POST /clear" ++ _ ->
+		    {"POST", "/clear"} ->
 			save_todos({0, []}),
 			ResultJson = "{\"success\":true,\"message\":\"All tasks cleared\"}",
                         ContentLength = integer_to_list(length(ResultJson)),
