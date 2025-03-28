@@ -2,14 +2,19 @@
 -export([start/0]).
 
 start() ->
-    Todos = [],
-    start(Todos).
+    io:format("Todo app started!~n"),
+    State = {0, []},
+    start(State).
 
-start(Todos) ->
-    io:format("Todo app started!"),
+start({ Count, Todos }) ->
     Task = string:trim(io:get_line("enter a task > ")),
+    NewId = Count + 1,
     io:format("new task: ~p~n", [Task]),
-    NewTodos = [Task | Todos],
-    io:format("all tasks: ~p~n", [NewTodos]),
-    start(NewTodos).
+    NewTodos = [{ NewId, Task, false } | Todos],
+    io:format("all tasks:~n"),
+    lists:foreach(
+      fun({Id, T, _Done}) -> io:format(" - [~p] ~s~n", [Id, T]) end,
+      lists:reverse(NewTodos)
+     ),
+    start({ NewId, NewTodos }).
 
