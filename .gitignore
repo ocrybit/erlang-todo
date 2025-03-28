@@ -1,2 +1,3 @@
 *.beam
+*.db
 erl_crash.dump
