@@ -7,14 +7,35 @@ start() ->
     start(State).
 
 start({ Count, Todos }) ->
-    Task = string:trim(io:get_line("enter a task > ")),
-    NewId = Count + 1,
-    io:format("new task: ~p~n", [Task]),
-    NewTodos = [{ NewId, Task, false } | Todos],
+    Command = string:trim(io:get_line("enter a command > ")),
+    {NewCount, NewTodos} =
+	case string:tokens(Command, " ") of
+	    ["add" | TaskWords] ->
+		Task = string:join(TaskWords, " "),
+		NewId = Count + 1,
+		{NewId, [{ NewId, Task, false } | Todos]};
+	    ["remove",  IdStr] ->
+		{Id, _} = string:to_integer(IdStr),
+		Filtered = lists:filter(fun({I, _, _}) -> I =/= Id end, Todos),
+		{Count, Filtered};
+	    ["complete", IdStr] ->
+		{Id, _} = string:to_integer(IdStr),
+		Updated = lists:map(
+			    fun
+				({I, T, _}) when I =:= Id -> {I, T, true};
+				(Item) -> Item
+			    end,
+			    Todos
+			   ),
+		{Count, Updated};
+	    _ ->
+		io:format("invalid~n"),
+		{Count, Todos}
+	end,
     io:format("all tasks:~n"),
     lists:foreach(
-      fun({Id, T, _Done}) -> io:format(" - [~p] ~s~n", [Id, T]) end,
+      fun({Id, T, Done}) -> io:format(" - [~p] ~s (~p) ~n", [Id, T, Done]) end,
       lists:reverse(NewTodos)
      ),
-    start({ NewId, NewTodos }).
+    start({ NewCount, NewTodos }).
 
