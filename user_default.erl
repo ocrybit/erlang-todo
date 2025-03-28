@@ -13,8 +13,143 @@ load_todos() ->
             {0, []}  % default if file doesn't exist
     end.
 
+format_todos([]) ->
+    "[]";
+format_todos(Todos) ->
+    Items = lists:map(
+	      fun({Id, Task, Done}) ->
+		      EscapedTask = escape_string(Task),
+		      io_lib:format("{\"id\":~p,\"task\":\"~s\",\"done\":~s}", [
+										Id, 
+										EscapedTask, 
+										atom_to_list(Done)
+									       ])
+	      end,
+	      lists:reverse(Todos)
+	     ),
+    "[" ++ lists:flatten(string:join(Items, ",")) ++ "]".
+
+escape_string(String) ->
+    lists:foldr(fun(C, Acc) ->
+			case C of
+			    $" -> "\\" ++ [$"] ++ Acc;
+			    $\\ -> "\\" ++ [$\\] ++ Acc;
+			    $\n -> "\\" ++ [$n] ++ Acc;
+			    $\r -> "\\" ++ [$r] ++ Acc;
+			    $\t -> "\\" ++ [$t] ++ Acc;
+			    _ -> [C | Acc]
+			end
+		end, "", String).
+
+extract_param(RequestStr, Param) ->
+    Pattern = Param ++ "=([^&\r\n]+)",
+    case re:run(RequestStr, Pattern, [{capture, [1], list}]) of
+        {match, [Value]} -> 
+            url_decode(Value);
+        _ -> 
+            ""
+    end.
+extract_task(RequestStr) ->
+    case re:run(RequestStr, "task=([^&\r\n]+)", [{capture, [1], list}]) of
+        {match, [Task]} -> 
+						% URL decode the task
+            url_decode(Task);
+        _ -> 
+            "New task"  % Default if no task parameter found
+    end.
+
+extract_id(RequestStr) ->
+    case extract_param(RequestStr, "id") of
+        "" -> 0;
+        IdStr -> 
+            {Id, _} = string:to_integer(IdStr),
+            Id
+    end.
+url_decode(String) ->
+    url_decode(String, []).
+
+url_decode([], Acc) ->
+    lists:reverse(Acc);
+url_decode([$%, H1, H2 | Rest], Acc) ->
+    Hex = list_to_integer([H1, H2], 16),
+    url_decode(Rest, [Hex | Acc]);
+url_decode([$+ | Rest], Acc) ->
+    url_decode(Rest, [$ | Acc]);
+url_decode([C | Rest], Acc) ->
+    url_decode(Rest, [C | Acc]).
+
+start_rest_server() ->
+    {ok, ListenSocket} = gen_tcp:listen(8080, [
+					       binary,
+					       {active, false},
+					       {reuseaddr, true}
+					      ]),
+    io:format("REST server started on port 8080~n"),
+    spawn(fun() -> accept_connections(ListenSocket) end).
+
+accept_connections(ListenSocket) ->
+    {ok, Socket} = gen_tcp:accept(ListenSocket),
+    spawn(fun() -> accept_connections(ListenSocket) end),
+    case gen_tcp:recv(Socket, 0) of
+        {ok, Request} ->
+	    RequestStr = binary_to_list(Request),
+	    Response = 
+		case RequestStr of
+		    "GET /list" ++ _ ->
+			{_, Todos} = load_todos(),
+			TodosJson = format_todos(Todos),
+			ContentLength = integer_to_list(length(TodosJson)),
+			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ TodosJson;
+		    "POST /add" ++ _ ->
+			{Count, Todos} = load_todos(),
+			Task = extract_task(RequestStr),
+			NewId = Count + 1,
+                        NewTodos = [{NewId, Task, false} | Todos],
+			save_todos({NewId, NewTodos}),
+			TaskJson = io_lib:format("{\"id\":~p,\"task\":\"~s\",\"done\":false}", [NewId, escape_string(Task)]),
+                        FlatJson = lists:flatten(TaskJson),
+                        ContentLength = integer_to_list(length(FlatJson)),
+			"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+		    "POST /remove" ++ _ ->
+                        {Count, Todos} = load_todos(),
+                        Id = extract_id(RequestStr),
+                        NewTodos = lists:filter(fun({I, _, _}) -> I =/= Id end, Todos),
+                        save_todos({Count, NewTodos}),
+                        ResultJson = io_lib:format("{\"success\":true,\"id\":~p}", [Id]),
+                        FlatJson = lists:flatten(ResultJson),
+                        ContentLength = integer_to_list(length(FlatJson)),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+		    "POST /complete" ++ _ ->
+			{Count, Todos} = load_todos(),
+                        Id = extract_id(RequestStr),
+			UpdatedTodos = lists:map(
+					 fun({I, T, _}) when I =:= Id -> {I, T, true};
+					    (Item) -> Item
+					 end, 
+					 Todos
+					),
+			save_todos({Count, UpdatedTodos}),
+			ResultJson = io_lib:format("{\"success\":true,\"id\":~p,\"done\":true}", [Id]),
+                        FlatJson = lists:flatten(ResultJson),
+                        ContentLength = integer_to_list(length(FlatJson)),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+                   "POST /clear" ++ _ ->
+			save_todos({0, []}),
+			ResultJson = "{\"success\":true,\"message\":\"All tasks cleared\"}",
+                        ContentLength = integer_to_list(length(ResultJson)),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ ResultJson;
+		    _ ->
+			"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found"
+		end,
+	    gen_tcp:send(Socket, Response);
+        {error, closed} ->
+            ok
+    end,
+    gen_tcp:close(Socket).
+
 start() ->
     io:format("Todo app started!~n"),
+    start_rest_server(),
     State = load_todos(),
     start(State).
 
@@ -37,7 +172,7 @@ start({ Count, Todos }) ->
 			fun
 			    ({I, T, _}) when I =:= Id -> {I, T, true};
 			    (Item) -> Item
-			    end,
+			       end,
 			Todos
 		       ),
 		{Count, Updated};
