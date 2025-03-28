@@ -97,6 +97,13 @@ start_rest_server() ->
     io:format("REST server started on port 8080~n"),
     spawn(fun() -> accept_connections(ListenSocket) end).
 
+make_response(Body) ->
+    ContentLength = integer_to_list(length(Body)),
+    "HTTP/1.1 200 OK" ++ "\r\n" ++
+    "Content-Type: application/json" ++ "\r\n" ++
+    "Content-Length: " ++ ContentLength ++ "\r\n\r\n" ++
+    Body.
+
 accept_connections(ListenSocket) ->
     {ok, Socket} = gen_tcp:accept(ListenSocket),
     spawn(fun() -> accept_connections(ListenSocket) end),
@@ -108,31 +115,28 @@ accept_connections(ListenSocket) ->
 	    Response = 
 		case {Method, Path} of
 		    {"GET", "/list"} ->
-			{_, Todos} = load_todos(),
+			{_, Todos} = get_state(),
 			TodosJson = format_todos(Todos),
-			ContentLength = integer_to_list(length(TodosJson)),
-			"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ TodosJson;
+			make_response(TodosJson);
 		    {"POST", "/add"} ->
-			{Count, Todos} = load_todos(),
+			{Count, Todos} = get_state(),
 			Task = extract_task(RequestStr),
 			NewId = Count + 1,
                         NewTodos = [{NewId, Task, false} | Todos],
-			save_todos({NewId, NewTodos}),
+			update_state({NewId, NewTodos}),
 			TaskJson = io_lib:format("{\"id\":~p,\"task\":\"~s\",\"done\":false}", [NewId, escape_string(Task)]),
                         FlatJson = lists:flatten(TaskJson),
-                        ContentLength = integer_to_list(length(FlatJson)),
-			"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+			make_response(FlatJson);
 		    {"POST", "/remove"} ->
-                        {Count, Todos} = load_todos(),
+                        {Count, Todos} = get_state(),
                         Id = extract_id(RequestStr),
                         NewTodos = lists:filter(fun({I, _, _}) -> I =/= Id end, Todos),
-                        save_todos({Count, NewTodos}),
+                        update_state({Count, NewTodos}),
                         ResultJson = io_lib:format("{\"success\":true,\"id\":~p}", [Id]),
                         FlatJson = lists:flatten(ResultJson),
-                        ContentLength = integer_to_list(length(FlatJson)),
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+			make_response(FlatJson);
 		    {"POST", "/complete"} ->
-			{Count, Todos} = load_todos(),
+			{Count, Todos} = get_state(),
                         Id = extract_id(RequestStr),
 			UpdatedTodos = lists:map(
 					 fun({I, T, _}) when I =:= Id -> {I, T, true};
@@ -140,16 +144,14 @@ accept_connections(ListenSocket) ->
 					 end, 
 					 Todos
 					),
-			save_todos({Count, UpdatedTodos}),
+			update_state({Count, UpdatedTodos}),
 			ResultJson = io_lib:format("{\"success\":true,\"id\":~p,\"done\":true}", [Id]),
                         FlatJson = lists:flatten(ResultJson),
-                        ContentLength = integer_to_list(length(FlatJson)),
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ FlatJson;
+			make_response(FlatJson);
 		    {"POST", "/clear"} ->
-			save_todos({0, []}),
+			update_state({0, []}),
 			ResultJson = "{\"success\":true,\"message\":\"All tasks cleared\"}",
-                        ContentLength = integer_to_list(length(ResultJson)),
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " ++ ContentLength ++ "\r\n\r\n" ++ ResultJson;
+			make_response(ResultJson);
 		    _ ->
 			"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found"
 		end,
@@ -159,13 +161,44 @@ accept_connections(ListenSocket) ->
     end,
     gen_tcp:close(Socket).
 
+start_state_server() ->
+    State = load_todos(),
+    StateServerPid = spawn(fun() -> state_server(State) end),
+    register(todo_state, StateServerPid),
+    io:format("State server started~n").
+
+state_server(State) ->
+    receive
+        {get_state, Pid} ->
+            Pid ! {state, State},
+            state_server(State);
+        {update_state, NewState, Pid} ->
+            save_todos(NewState),
+            Pid ! {state_updated, ok},
+            state_server(NewState);
+        stop ->
+            ok
+    end.
+
+get_state() ->
+    todo_state ! {get_state, self()},
+    receive
+        {state, State} -> State
+    end.
+
+update_state(NewState) ->
+    todo_state ! {update_state, NewState, self()},
+    receive
+        {state_updated, ok} -> ok
+    end.
+
 start() ->
     io:format("Todo app started!~n"),
+    start_state_server(),
     start_rest_server(),
-    State = load_todos(),
-    start(State).
+    start_cli(get_state()).
 
-start({ Count, Todos }) ->
+start_cli({ Count, Todos }) ->
     Command = string:trim(io:get_line("enter a command > ")),
     {NewCount, NewTodos} =
 	case string:tokens(Command, " ") of
@@ -201,6 +234,6 @@ start({ Count, Todos }) ->
       fun({Id, T, Done}) -> io:format(" - [~p] ~s (~p) ~n", [Id, T, Done]) end,
       lists:reverse(NewTodos)
      ),
-    save_todos({NewCount, NewTodos}),
-    start({ NewCount, NewTodos }).
+    update_state({NewCount, NewTodos}),
+    start_cli({ NewCount, NewTodos }).
 
