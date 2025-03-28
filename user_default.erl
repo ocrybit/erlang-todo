@@ -157,6 +157,8 @@ start({ Count, Todos }) ->
     Command = string:trim(io:get_line("enter a command > ")),
     {NewCount, NewTodos} =
 	case string:tokens(Command, " ") of
+	    ["list"] ->
+		{Count, Todos};
 	    ["add" | TaskWords] ->
 		Task = string:join(TaskWords, " "),
 		NewId = Count + 1,
